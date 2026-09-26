@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "telegram-agent-bot",
+  "main": "src/index.js",
+  "compatibility_date": "2026-06-23",
+  "workers_dev": true,
+  "preview_urls": false,
+  "keep_vars": true,
+  "observability": {
+    "enabled": true
+  },
+  "ai": {
+    "binding": "AI"
+  },
+  "kv_namespaces": [
+    {
+      "binding": "CHAT_HISTORY",
+      "id": "REPLACE_WITH_YOUR_KV_NAMESPACE_ID"
+    }
+  ],
+  "queues": {
+    "producers": [
+      {
+        "binding": "TELEGRAM_UPDATES",
+        "queue": "telegram-agent-updates"
+      }
+    ],
+    "consumers": [
+      {
+        "queue": "telegram-agent-updates",
+        "max_batch_size": 1,
+        "max_batch_timeout": 1,
+        "max_retries": 3
+      }
+    ]
+  }
+}

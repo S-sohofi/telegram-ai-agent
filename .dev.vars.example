@@ -1,0 +1,6 @@
+# Copy this file to .dev.vars for local development only.
+# Add production secrets with `npx wrangler secret put <NAME>`.
+TELEGRAM_BOT_TOKEN=replace_me
+TELEGRAM_WEBHOOK_SECRET=replace_me
+TAVILY_API_KEY=replace_me
+GEMINI_API_KEY=replace_me

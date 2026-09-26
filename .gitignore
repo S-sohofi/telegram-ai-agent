@@ -1,0 +1,7 @@
+/.env
+/.dev.vars
+/.wrangler/
+/wrangler.jsonc
+/node_modules/
+/.vscode/
+/.idea/
