@@ -4,3 +4,4 @@ TELEGRAM_BOT_TOKEN=replace_me
 TELEGRAM_WEBHOOK_SECRET=replace_me
 TAVILY_API_KEY=replace_me
 GEMINI_API_KEY=replace_me
+GEMINI_FALLBACK_API_KEY=replace_me

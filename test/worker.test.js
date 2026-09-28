@@ -195,7 +195,7 @@ test('Gemini is primary and exposes native Google Search grounding', async () =>
   let requestBody = null;
 
   globalThis.fetch = async (url, options) => {
-    assert.match(String(url), /gemini-2\.5-flash:generateContent$/);
+    assert.match(String(url), /gemini-3\.1-flash-lite:generateContent$/);
     assert.equal(options.headers['x-goog-api-key'], 'test-gemini-key');
     requestBody = JSON.parse(options.body);
     return new Response(JSON.stringify({
@@ -218,7 +218,7 @@ test('Gemini is primary and exposes native Google Search grounding', async () =>
     ], { GEMINI_API_KEY: 'test-gemini-key' });
 
     assert.equal(result.__selectedProvider, 'gemini');
-    assert.equal(result.__selectedModel, 'gemini-2.5-flash');
+    assert.equal(result.__selectedModel, 'gemini-3.1-flash-lite');
     assert.deepEqual(result.__usedTools, ['google_search']);
     assert.equal(result.response, 'Fresh answer');
     assert.deepEqual(result.__groundingSources, [{
@@ -270,16 +270,54 @@ test('search sources are sent as clickable titles without visible URLs', async (
   }
 });
 
-test('Gemini rate limits advance to the next configured Gemini model', async () => {
+test('Gemini tool rate limits retry the same key and model without tools', async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedModels = [];
+  const requestBodies = [];
+
+  globalThis.fetch = async (url, options) => {
+    const model = decodeURIComponent(String(url).match(/models\/([^:]+):/)[1]);
+    requestedModels.push(model);
+    requestBodies.push(JSON.parse(options.body));
+    if (requestBodies.at(-1).tools) {
+      return new Response(JSON.stringify({
+        error: { status: 'RESOURCE_EXHAUSTED', message: 'Grounding requests are rate limited' }
+      }), { status: 429, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: 'Plain request answer' }] } }]
+    }), { headers: { 'content-type': 'application/json' } });
+  };
+
+  try {
+    const result = await callTextAI([
+      { role: 'user', content: 'Hello' }
+    ], {
+      GEMINI_API_KEY: 'test-gemini-key',
+      GEMINI_MODELS: 'gemini-2.5-flash,gemini-3.8-flash'
+    });
+
+    assert.deepEqual(requestedModels, ['gemini-2.5-flash', 'gemini-2.5-flash']);
+    assert.ok(requestBodies[0].tools);
+    assert.equal(requestBodies[1].tools, undefined);
+    assert.equal(result.__selectedModel, 'gemini-2.5-flash');
+    assert.equal(result.__toolsDisabledForModel, true);
+    assert.equal(result.response, 'Plain request answer');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Gemini model rate limits advance after the plain retry also fails', async () => {
   const originalFetch = globalThis.fetch;
   const requestedModels = [];
 
   globalThis.fetch = async (url) => {
     const model = decodeURIComponent(String(url).match(/models\/([^:]+):/)[1]);
     requestedModels.push(model);
-    if (requestedModels.length === 1) {
+    if (model === 'gemini-2.5-flash') {
       return new Response(JSON.stringify({
-        error: { status: 'RESOURCE_EXHAUSTED', message: 'Rate limit exceeded' }
+        error: { status: 'RESOURCE_EXHAUSTED', message: 'Model quota exceeded' }
       }), { status: 429, headers: { 'content-type': 'application/json' } });
     }
     return new Response(JSON.stringify({
@@ -295,8 +333,61 @@ test('Gemini rate limits advance to the next configured Gemini model', async () 
       GEMINI_MODELS: 'gemini-2.5-flash,gemini-3.8-flash'
     });
 
-    assert.deepEqual(requestedModels, ['gemini-2.5-flash', 'gemini-3.8-flash']);
+    assert.deepEqual(requestedModels, [
+      'gemini-2.5-flash',
+      'gemini-2.5-flash',
+      'gemini-3.8-flash'
+    ]);
     assert.equal(result.__selectedModel, 'gemini-3.8-flash');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('Gemini rate limits on every model switch to the next API key', async () => {
+  const originalFetch = globalThis.fetch;
+  const requestedKeys = [];
+  const requestedModels = [];
+
+  globalThis.fetch = async (url, options) => {
+    const apiKey = options.headers['x-goog-api-key'];
+    requestedKeys.push(apiKey);
+    requestedModels.push(decodeURIComponent(String(url).match(/models\/([^:]+):/)[1]));
+    if (apiKey === 'primary-gemini-key') {
+      return new Response(JSON.stringify({
+        error: { status: 'RESOURCE_EXHAUSTED', message: 'Rate limit exceeded' }
+      }), { status: 429, headers: { 'content-type': 'application/json' } });
+    }
+    return new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: 'Second key answer' }] } }]
+    }), { headers: { 'content-type': 'application/json' } });
+  };
+
+  try {
+    const result = await callTextAI([
+      { role: 'user', content: 'Hello' }
+    ], {
+      GEMINI_API_KEY: 'primary-gemini-key',
+      GEMINI_FALLBACK_API_KEY: 'secondary-gemini-key',
+      GEMINI_MODELS: 'gemini-3.1-flash-lite,gemini-3.5-flash-lite'
+    });
+
+    assert.deepEqual(requestedKeys, [
+      'primary-gemini-key',
+      'primary-gemini-key',
+      'primary-gemini-key',
+      'primary-gemini-key',
+      'secondary-gemini-key'
+    ]);
+    assert.deepEqual(requestedModels, [
+      'gemini-3.1-flash-lite',
+      'gemini-3.1-flash-lite',
+      'gemini-3.5-flash-lite',
+      'gemini-3.5-flash-lite',
+      'gemini-3.1-flash-lite'
+    ]);
+    assert.equal(result.__selectedModel, 'gemini-3.1-flash-lite');
+    assert.equal(result.response, 'Second key answer');
   } finally {
     globalThis.fetch = originalFetch;
   }

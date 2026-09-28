@@ -70,6 +70,12 @@ limited, or unavailable, the application falls back to the configured
 Cloudflare Workers AI models. Workers AI uses the `AI` binding and does not
 require a separate API key. Review its [pricing and free allocation](https://developers.cloudflare.com/workers-ai/platform/pricing/).
 
+When every Gemini model returns a rate-limit error for the current API key,
+the bot retries the whole model chain with the next configured key: any keys
+listed in `GEMINI_API_KEYS`, then `GEMINI_FALLBACK_API_KEY` (a Worker
+secret/variable set in Cloudflare). Only after all keys are exhausted does it
+fall back to Workers AI.
+
 Never place real credential values in source files, `README.md`,
 `wrangler.jsonc`, or `.dev.vars.example`.
 
@@ -141,11 +147,14 @@ Wrangler prompts for each value without placing it in the repository:
 ```bash
 npx wrangler secret put TELEGRAM_BOT_TOKEN
 npx wrangler secret put GEMINI_API_KEY
+npx wrangler secret put GEMINI_FALLBACK_API_KEY
 npx wrangler secret put TAVILY_API_KEY
 ```
 
 Skip `TAVILY_API_KEY` if `/check` is not needed. Skip `GEMINI_API_KEY` only if
-Cloudflare Workers AI should handle all text requests.
+Cloudflare Workers AI should handle all text requests. `GEMINI_FALLBACK_API_KEY`
+is optional; it is the last key tried when the primary key is rate limited on
+every Gemini model.
 
 Generate and upload a random webhook secret with Node.js:
 
@@ -219,16 +228,17 @@ entries from `.gitignore`.
 
 The default text-provider order is:
 
-1. `gemini-2.5-flash`
-2. `gemini-3.8-flash`
-3. `gemini-3.5-flash-lite`
-4. Cloudflare Workers AI
+1. `gemini-3.1-flash-lite`
+2. `gemini-3.5-flash-lite`
+3. Cloudflare Workers AI
 
 Useful optional Worker variables:
 
 | Variable | Purpose |
 | --- | --- |
 | `GEMINI_MODELS` | Comma-separated Gemini fallback order |
+| `GEMINI_API_KEYS` | Extra comma-separated keys tried after the primary key is rate limited on every model |
+| `GEMINI_FALLBACK_API_KEY` | Last-resort Gemini key, set as a Cloudflare secret or variable |
 | `GEMINI_ENABLED=false` | Disable Gemini completely |
 | `GEMINI_GOOGLE_SEARCH=false` | Disable native Google Search |
 | `GEMINI_URL_CONTEXT=false` | Disable URL Context |
@@ -271,7 +281,10 @@ npx wrangler tail <worker-name>  # Stream live Worker and Queue logs
 - **The bot acknowledges messages but does not reply:** inspect Queue events
   with `wrangler tail` and verify the Queue has one producer and one consumer.
 - **Gemini returns `429`:** the bot automatically tries the next Gemini model,
-  then Cloudflare Workers AI.
+  but first retries the same key and model without Gemini tools because Google
+  Search grounding has a separate limit. If the plain request is also limited,
+  it tries the next model, then the next API key (`GEMINI_API_KEYS`,
+  `GEMINI_FALLBACK_API_KEY`), then Cloudflare Workers AI.
 - **`/check` is unavailable:** configure `TAVILY_API_KEY`.
 - **No chat history:** verify the `CHAT_HISTORY` KV namespace ID and binding.
 

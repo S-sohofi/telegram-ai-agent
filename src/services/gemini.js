@@ -11,7 +11,8 @@ import {
 const GEMINI_API_BASE = 'https://generativelanguage.googleapis.com/v1beta';
 
 export async function callGeminiText(messages, env, options = {}) {
-  if (!env.GEMINI_API_KEY) {
+  const apiKeys = getGeminiApiKeys(env);
+  if (!apiKeys.length) {
     throw new Error('GEMINI_API_KEY is not configured');
   }
 
@@ -21,45 +22,69 @@ export async function callGeminiText(messages, env, options = {}) {
     || numberFromEnv(env.TEXT_MAX_TOKENS, DEFAULT_TEXT_MAX_TOKENS);
   let lastError = null;
 
-  for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
-    const model = models[modelIndex];
+  for (let keyIndex = 0; keyIndex < apiKeys.length; keyIndex += 1) {
+    const apiKey = apiKeys[keyIndex];
+    const keyLabel = `API key #${keyIndex + 1} (${keyFingerprint(apiKey)})`;
+    let rotateKey = false;
 
-    try {
-      const response = await requestGemini(model, messages, tools, maxTokens, env);
-      const result = normalizeGeminiResponse(response, model, tools);
-      if (modelIndex > 0) {
-        console.warn(`Gemini fallback selected: ${model}`);
-      }
-      console.log(
-        `Gemini response selected: ${model}`
-        + `${result.__usedTools.length ? ` (tools: ${result.__usedTools.join(', ')})` : ''}`
-      );
-      return result;
-    } catch (error) {
-      lastError = error;
+    for (let modelIndex = 0; modelIndex < models.length; modelIndex += 1) {
+      const model = models[modelIndex];
 
-      if (tools.length && isToolConfigurationError(error)) {
-        try {
-          console.warn(`Gemini tools are unavailable for ${model}; retrying without tools`);
-          const response = await requestGemini(model, messages, [], maxTokens, env);
-          const result = normalizeGeminiResponse(response, model, []);
-          result.__toolsDisabledForModel = true;
-          console.log(`Gemini response selected: ${model} (tools unavailable)`);
-          return result;
-        } catch (retryError) {
-          lastError = retryError;
+      try {
+        const response = await requestGemini(model, messages, tools, maxTokens, env, apiKey);
+        const result = normalizeGeminiResponse(response, model, tools);
+        if (modelIndex > 0 || keyIndex > 0) {
+          console.warn(`Gemini fallback selected: ${model} (${keyLabel})`);
+        }
+        console.log(
+          `Gemini response selected: ${model} (${keyLabel})`
+          + `${result.__usedTools.length ? ` (tools: ${result.__usedTools.join(', ')})` : ''}`
+        );
+        return result;
+      } catch (error) {
+        lastError = error;
+
+        if (tools.length && shouldRetryWithoutTools(error)) {
+          try {
+            const reason = isRateLimitError(error)
+              ? 'tool-enabled request was rate limited'
+              : 'tools are unavailable';
+            console.warn(`Gemini ${reason} for ${model}; retrying the same model without tools`);
+            const response = await requestGemini(model, messages, [], maxTokens, env, apiKey);
+            const result = normalizeGeminiResponse(response, model, []);
+            result.__toolsDisabledForModel = true;
+            console.log(`Gemini response selected: ${model} (${keyLabel}) (tools disabled)`);
+            return result;
+          } catch (retryError) {
+            lastError = retryError;
+          }
+        }
+
+        console.warn(
+          `Gemini model attempt failed (${keyLabel}, ${model}): ${formatGeminiError(lastError)}`
+        );
+
+        if (isAuthenticationError(lastError)) {
+          rotateKey = true;
+          break;
+        }
+        if (isRateLimitError(lastError)) {
+          rotateKey = true;
         }
       }
+    }
 
-      console.warn(`Gemini model attempt failed (${model}): ${formatGeminiError(lastError)}`);
-      if (isAuthenticationError(lastError)) break;
+    if (rotateKey && keyIndex < apiKeys.length - 1) {
+      console.warn(
+        `Gemini ${keyLabel} is ${isAuthenticationError(lastError) ? 'invalid' : 'rate limited'}; switching to next API key (${keyFingerprint(apiKeys[keyIndex + 1])})`
+      );
     }
   }
 
   throw lastError || new Error('All Gemini models failed');
 }
 
-async function requestGemini(model, messages, tools, maxTokens, env) {
+async function requestGemini(model, messages, tools, maxTokens, env, apiKey) {
   const baseUrl = String(env.GEMINI_API_BASE || GEMINI_API_BASE).replace(/\/+$/, '');
   const url = `${baseUrl}/models/${encodeURIComponent(model)}:generateContent`;
   const timeoutMs = numberFromEnv(env.GEMINI_TIMEOUT_MS, DEFAULT_GEMINI_TIMEOUT_MS);
@@ -72,7 +97,7 @@ async function requestGemini(model, messages, tools, maxTokens, env) {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
-        'x-goog-api-key': env.GEMINI_API_KEY
+        'x-goog-api-key': apiKey
       },
       body: JSON.stringify(buildGeminiRequest(messages, tools, maxTokens)),
       signal: controller.signal
@@ -263,9 +288,37 @@ function getGeminiModels(env) {
   return [...new Set(configured.map((model) => String(model).trim()).filter(Boolean))];
 }
 
+function getGeminiApiKeys(env) {
+  const configured = [
+    env.GEMINI_API_KEY,
+    ...(env.GEMINI_API_KEYS ? String(env.GEMINI_API_KEYS).split(',') : []),
+    env.GEMINI_FALLBACK_API_KEY
+  ];
+  return [...new Set(configured.map((key) => String(key || '').trim()).filter(Boolean))];
+}
+
+function keyFingerprint(key) {
+  const value = String(key || '');
+  return value.length > 12 ? `${value.slice(0, 6)}...${value.slice(-4)}` : `${value.length}-char key`;
+}
+
+function isRateLimitError(error) {
+  if (!error) return false;
+  return error.status === 429
+    || error.apiStatus === 'RESOURCE_EXHAUSTED'
+    || /RESOURCE_EXHAUSTED|rate ?limit|quota|too many requests/i.test(error.message || '');
+}
+
 function isToolConfigurationError(error) {
   return error && error.status === 400
     && /tool|google.?search|url.?context|code.?execution|not supported/i.test(error.message || '');
+}
+
+function shouldRetryWithoutTools(error) {
+  // Grounding and other Gemini tools have limits separate from ordinary
+  // generateContent calls. A tool-enabled request can therefore return 429
+  // while the same key and model still work for a plain request.
+  return isToolConfigurationError(error) || isRateLimitError(error);
 }
 
 function isAuthenticationError(error) {

@@ -4,8 +4,7 @@ export const DEFAULT_TEXT_MODEL = '@cf/zai-org/glm-4.7-flash';
 export const DEFAULT_VISION_MODEL = '@cf/meta/llama-3.2-11b-vision-instruct';
 export const DEFAULT_WHISPER_MODEL = '@cf/openai/whisper-large-v3-turbo';
 export const DEFAULT_GEMINI_MODELS = [
-  'gemini-2.5-flash',
-  'gemini-3.8-flash',
+  'gemini-3.1-flash-lite',
   'gemini-3.5-flash-lite'
 ];
 export const DEFAULT_GEMINI_TIMEOUT_MS = 45000;
